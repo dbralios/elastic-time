@@ -1,0 +1,205 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+import os
+from enum import Enum
+from typing import Optional
+
+import torch
+
+from ._logging import get_logger
+
+logger = get_logger("DEBUG")
+
+
+def get_world_size_and_rank() -> tuple[int, int]:
+    """Function that gets the current world size (aka total number
+    of ranks) and rank number of the current process in the default process group.
+
+    Returns:
+        Tuple[int, int]: world size, rank
+    """
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_world_size(), torch.distributed.get_rank()
+    else:
+        return 1, 0
+
+
+def _get_local_rank() -> Optional[int]:
+    """Function that gets the local rank from the environment.
+
+    Returns:
+        local_rank int or None if not set.
+    """
+    local_rank = os.environ.get("LOCAL_RANK")
+    if local_rank is not None:
+        local_rank = int(local_rank)
+    return local_rank
+
+
+def _get_device_type_from_env() -> str:
+    """Function that gets the torch.device based on the current machine.
+
+    This currently only supports CPU, CUDA, NPU.
+
+    Returns:
+        device
+    """
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.xpu.is_available():
+        device = "xpu"
+    else:
+        device = "cpu"
+    return device
+
+
+def _setup_device(device: torch.device) -> torch.device:
+    """Function that sets the CUDA-like device and infers the device
+    index if not set.
+
+    Args:
+        device (torch.device): The device to set.
+
+    Raises:
+        RuntimeError: If device index is not available.
+
+    Returns:
+        device
+    """
+    local_rank = _get_local_rank() or 0
+    device_support = get_device_support()
+    device_type = device_support.device_type
+    device_name = device_support.device_name
+    torch_device = get_torch_device_namespace()
+
+    if device.index is None:
+        device = torch.device(type=device_type, index=local_rank)
+
+    # Ensure index is available before setting device
+    if device.index >= torch_device.device_count():
+        raise RuntimeError(f"The local rank is larger than the number of available {device_name}s.")
+    torch_device.set_device(device)
+    return device
+
+
+def _validate_device_from_env(device: torch.device) -> None:
+    """Function that validates the device is correct given the current machine.
+    This will raise an error if the device is not available or doesn't match the
+    assigned process device on distributed runs.
+
+    Args:
+        device (torch.device): The device to validate.
+
+    Raises:
+        RuntimeError: If the device is not available or doesn't match the assigned process device.
+
+    Returns:
+        device
+    """
+    local_rank = _get_local_rank()
+
+    # Check if the device index is correct
+    if device.type != "cpu" and local_rank is not None:
+        # Ensure device index matches assigned index when distributed training
+        if device.index != local_rank:
+            raise RuntimeError(
+                f"You can't specify a device index when using distributed training. "
+                f"Device specified is {device} but local rank is:{local_rank}"
+            )
+
+    # Check if the device is available on this machine
+    try:
+        torch.empty(0, device=device)
+    except RuntimeError as e:
+        raise RuntimeError(f"The device {device} is not available on this machine.") from e
+
+
+def get_device(device: Optional[str] = None) -> torch.device:
+    """Function that takes an optional device string, verifies it's correct and available given the machine and
+    distributed settings, and returns a :func:`~torch.device`. If device string is not provided, this function will
+    infer the device based on the environment.
+
+    If CUDA-like is available and being used, this function also sets the CUDA-like device.
+
+    Args:
+        device (Optional[str]): The name of the device to use, e.g. "cuda" or "cpu" or "npu" or "xpu".
+
+    Example:
+        >>> device = get_device("cuda")
+        >>> device
+        device(type='cuda', index=0)
+
+    Returns:
+        torch.device: Device
+    """
+    if device is None:
+        device = _get_device_type_from_env()
+    device = torch.device(device)
+    if device.type in ["cuda", "xpu"]:
+        device = _setup_device(device)
+    _validate_device_from_env(device)
+    return device
+
+
+class DeviceSupport(Enum):
+    """
+    This is a simple enum for compute devices,
+    This currently only supports CPU, CUDA, NPU, and XPU.
+    The following enumeration defines various device configurations with attributes:
+    1. `device_type` (str): The type of device (e.g., "cpu", "cuda", "npu", "xpu").
+    2. `device_name` (str): A user-friendly name for the device (e.g., "CPU", "GPU", "NPU", "XPU").
+    3. `communication_backend` (str): Specifies the backend used for communication on this device
+    (e.g., "gloo", "nccl", "hccl", "ccl").
+    """
+
+    CPU = ("cpu", "CPU", "gloo")
+    CUDA = ("cuda", "GPU", "nccl")
+    NPU = ("npu", "NPU", "hccl")
+    XPU = ("xpu", "XPU", "ccl")
+
+    def __init__(
+        self,
+        device_type: str,
+        device_name: str,
+        communication_backend: str,
+    ):
+        self.device_type = device_type
+        self.device_name = device_name
+        self.communication_backend = communication_backend
+
+    @staticmethod
+    def from_type(device_type: str):
+        for member in DeviceSupport:
+            if member.device_type == device_type:
+                return member
+        raise ValueError(f"Unknown device type: {device_type}.")
+
+
+def get_device_support() -> DeviceSupport:
+    """function that gets the DeviceSupport with compute devices based on the current machine.
+
+    This currently only supports CPU, CUDA, NPU, XPU.
+
+    Returns:
+        device_support: DeviceSupport
+    """
+    device_type = _get_device_type_from_env()
+    return DeviceSupport.from_type(device_type)
+
+
+def get_torch_device_namespace() -> any:
+    """Return the corresponding torch attribute based on the device type string.
+
+    Returns:
+        module: The corresponding torch device namespace, or torch.cuda if not found.
+    """
+    device_type = get_device_support().device_type
+    try:
+        return getattr(torch, device_type)
+    except AttributeError:
+        logger.warning(f"Device namespace '{device_type}' not found in torch, try to load torch.cuda.")
+        return torch.cuda
