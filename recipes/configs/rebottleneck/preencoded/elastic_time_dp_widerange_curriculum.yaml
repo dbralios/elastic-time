@@ -1,0 +1,196 @@
+data_root: /path/to/data
+output_root: /path/to/experiments
+
+# Model Arguments
+autoencoder:
+  _component_: torch.nn.Identity
+
+model:
+  _component_: rebots.models.rebottlenecks.ElasticTimeReBottleneck
+  encoder:
+    _component_: rebots.models.components.convnext_stacks.ConvNeXtStack
+    input_dim: 64
+    num_blocks: 6
+    hidden_dim: 1024
+    output_dim: 128
+  decoder:
+    _component_: rebots.models.components.convnext_stacks.ConvNeXtStack
+    input_dim: 64
+    num_blocks: 6
+    hidden_dim: 1024
+    output_dim: 64
+  predictor:
+    _component_: rebots.models.predictors.ElasticTimeAutoregressiveGRU
+    hidden_dim: 128
+    input_dim: 64
+    num_layers: 3
+    bias: True
+    learned_h_initial: True
+    out_swiglu_ffn: True
+  conditioner:
+    _component_: rebots.models.components.eq_processors.ScalarOpConditioner
+    condition_dim: 128
+    num_controls: 1
+    embedder:
+      _component_: rebots.models.components.timestep_emb.FourierFeatures
+      in_features: 1
+      out_features: 64
+    mapper:
+      _component_: torch.nn.Linear
+      in_features: 64
+      out_features: 128
+  bottleneck:
+    _component_: rebots.modules.vae.VAEBottleneck
+
+discriminator:
+  _component_: rebots.models.discriminators.LatentDiscriminator
+  hidden_dim: 256
+
+# Elastic Time parameters
+K: 12
+K_rollout: 5
+masker:
+  _component_: rebots.models.components.elastic_time_masker.ElasticTimeMasker
+  K: ${K}
+  strategies:
+    - name: random
+      weight: 0.0
+      params:
+        N: 6
+    - name: dp
+      weight: 0.975 # 1.0
+      params:
+        target_length_range: [0.2, 0.995]
+        curriculum:
+          start_target_length_range: [0.9, 0.995]
+          end_target_length_range: [0.2, 0.995]
+          start_progress: 0.0
+          end_progress: 0.5 # 1.0
+    - name: keep
+      weight: 0.025 # 0.0
+
+loss:
+  _component_: torch.nn.MSELoss
+loss_predictor:
+  _component_: torch.nn.MSELoss
+loss_gan:
+  _component_: rebots.modules.gan_losses.GANLoss
+
+loss_weights:
+  loss_reconstruction: 2.0
+  loss_predictor: 0.4
+  loss_predictor_valid: 0.1
+  loss_discriminator: 1.0
+  loss_adversarial: 0.5
+  loss_feature_matching: 1.0
+  loss_kl: 0.0001
+
+
+# Dataset
+dataset:
+  _component_: rebots.data.datasets.PreEncodedDataset
+  latent_extension: npy
+  load_mean_sigma: true
+  random_crop: true
+  latent_crop_length: 96
+  configs:
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: audioset-balanced
+      path: "${data_root}/audioset-balanced/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: fsd50k
+      path: "${data_root}/fsd50k/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: bbcsoundeffects
+      path: "${data_root}/bbcsoundeffects/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: rwc
+      path: "${data_root}/rwc/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: moisesdb
+      path: "${data_root}/moisesdb/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: jamendo-fma
+      path: "${data_root}/jamendo-fma-chunked/"
+seed: null
+shuffle: True
+
+
+# Fine-tuning arguments
+batch_size: 64
+epochs: 50
+optimizer:
+  _component_: rebots.modules.muon.CombinedOptimizer
+  lr: 1e-3
+  momentum: 0.95
+  adamw_lr: 1e-4
+  adamw_betas: [0.9, 0.999]
+  adamw_wd: 1e-4
+  adamw_eps: 1.0e-15
+optimizer_discriminator:
+  _component_: torch.optim.AdamW
+  lr: 1e-4
+  weight_decay: 1e-4
+max_steps_per_epoch: 5000
+gradient_accumulation_steps: 1
+clip_grad_norm: 50.0
+
+compile: True
+compile_mode: default
+compile_dynamic: False
+compile_fullgraph: False
+compile_discriminator: True
+
+# Validation dataset (pre-encoded SongDescriber)
+dataset_validation:
+  _component_: rebots.data.datasets.PreEncodedDataset
+  latent_extension: npy
+  load_mean_sigma: true
+  random_crop: false
+  latent_crop_length: 96
+  configs:
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: songdescriber-nosinging
+      path: "${data_root}/songdescriber-nosinging"
+
+validation_batch_size: 8
+validation_max_steps: 32
+
+masker_validation:
+  _component_: rebots.models.components.elastic_time_masker.ElasticTimeMasker
+  K: ${K}
+  strategies:
+    - name: dp
+      weight: 1.0
+      params:
+        target_length_range: [0.5, 0.5]
+
+metrics:
+  - _component_: torch.nn.MSELoss
+    name: mse_per_frame
+    reduction: mean
+
+# Training environment
+device: cuda
+
+# Reduced precision
+dtype: fp32
+
+# Logging
+# metric_logger:
+#   _component_: src.utils.metric_logging.DiskLogger
+#   log_dir: ${output_dir}/logs
+exp_name: rebot-preencoded-elastic-time-dp-widerange-curriculum-2
+output_dir: ${output_root}/${exp_name}
+metric_logger:
+  _component_: rebots.utils.metric_logging.WandBLogger
+  log_dir: ${output_dir}/logs
+  project: elastic-time # wandb project name
+  name: ${exp_name} # wandb run name
+  watch:
+    log: all
+    log_freq: 500
+
+save_every_n_epochs: 1
+log_every_n_steps: 1
+log_peak_memory_stats: True

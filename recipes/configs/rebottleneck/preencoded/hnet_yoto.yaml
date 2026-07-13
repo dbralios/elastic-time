@@ -1,0 +1,142 @@
+data_root: /path/to/data
+output_root: /path/to/experiments
+
+autoencoder:
+  _component_: torch.nn.Identity
+
+model:
+  _component_: rebots.models.rebottlenecks.HNetReBottleneck
+  encoder:
+    _component_: rebots.models.components.convnext_stacks.ConditionalConvNeXtStack
+    input_dim: 64
+    num_blocks: 6
+    hidden_dim: 1024
+    output_dim: 128
+    cond_dim: 128
+  decoder:
+    _component_: rebots.models.components.convnext_stacks.ConditionalConvNeXtStack
+    input_dim: 64
+    num_blocks: 6
+    hidden_dim: 1024
+    output_dim: 64
+    cond_dim: 128
+  chunker:
+    _component_: rebots.models.rebottlenecks.HNetChunker
+    latent_dim: 64
+    query_dim: 16
+  conditioner:
+    _component_: rebots.models.components.eq_processors.ScalarOpConditioner
+    condition_dim: 128
+    num_controls: 1
+    embedder:
+      _component_: rebots.models.components.timestep_emb.FourierFeatures
+      in_features: 1
+      out_features: 64
+    mapper:
+      _component_: torch.nn.Linear
+      in_features: 64
+      out_features: 128
+  bottleneck:
+    _component_: rebots.modules.vae.VAEBottleneck
+
+utilization_config:
+  mode: sampled
+  per_sample: true
+  value: 0.5
+  range: [0.5, 0.995]
+  distribution: uniform
+conditional_util: true
+
+discriminator:
+  _component_: rebots.models.discriminators.LatentDiscriminator
+  hidden_dim: 256
+
+
+loss:
+  _component_: torch.nn.MSELoss
+loss_gan:
+  _component_: rebots.modules.gan_losses.GANLoss
+
+loss_weights:
+  loss_reconstruction: 2.0
+  loss_ratio: 0.75
+  loss_discriminator: 1.0
+  loss_adversarial: 0.5
+  loss_feature_matching: 1.0
+  loss_kl: 0.0001
+
+
+# Dataset
+dataset:
+  _component_: rebots.data.datasets.PreEncodedDataset
+  latent_extension: npy
+  load_mean_sigma: true
+  random_crop: true
+  latent_crop_length: 96
+  configs:
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: audioset-balanced
+      path: "${data_root}/audioset-balanced/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: fsd50k
+      path: "${data_root}/fsd50k/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: bbcsoundeffects
+      path: "${data_root}/bbcsoundeffects/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: rwc
+      path: "${data_root}/rwc/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: moisesdb
+      path: "${data_root}/moisesdb/"
+    - _component_: external.stable_audio_tools.src.data.dataset.LocalDatasetConfig
+      id: jamendo-fma
+      path: "${data_root}/jamendo-fma-chunked/"
+seed: null
+shuffle: True
+
+
+# Fine-tuning arguments
+batch_size: 64
+epochs: 50
+optimizer:
+  _component_: rebots.modules.muon.CombinedOptimizer
+  lr: 1e-3
+  momentum: 0.95
+  adamw_lr: 1e-4
+  adamw_betas: [0.9, 0.999]
+  adamw_wd: 1e-4
+  adamw_eps: 1.0e-15
+optimizer_discriminator:
+  _component_: torch.optim.AdamW
+  lr: 1e-4
+  weight_decay: 1e-4
+max_steps_per_epoch: 5000
+gradient_accumulation_steps: 1
+clip_grad_norm: 50.0
+compile: False
+
+# Training environment
+device: cuda
+
+# Reduced precision
+dtype: fp32 # bf16
+
+# Logging
+# metric_logger:
+#   _component_: src.utils.metric_logging.DiskLogger
+#   log_dir: ${output_dir}/logs
+exp_name: rebot-preencoded-hnet-yoto
+output_dir: ${output_root}/${exp_name}
+metric_logger:
+  _component_: rebots.utils.metric_logging.WandBLogger
+  log_dir: ${output_dir}/logs
+  project: elastic-time # wandb project name
+  name: ${exp_name} # wandb run name
+  watch:
+    log: all
+    log_freq: 500
+
+save_every_n_epochs: 1
+log_every_n_steps: 1
+log_peak_memory_stats: True
