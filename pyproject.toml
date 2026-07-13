@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elastic-time-project"
+version = "0.0.1"
+description = "Elastic Time project"
+authors = [{name = "Dimitrios Bralios", email = "dbralios@illinois.edu"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = [
+    # "torch"
+    # "torchaudio",
+    "alias-free-torch",
+    "einops",
+    "librosa",
+    "numpy",
+    "omegaconf",
+    "safetensors",
+    "tqdm",
+    "typing-extensions",
+    "wandb",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "ruff",
+    "usort", 
+    "pydoclint",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rebots*", "external*", "recipes*"]
+
+[tool.setuptools.package-data]
+recipes = ["configs/*.yaml", "configs/*/*.yaml", "configs/*/*/*.yaml"]
+
+
+# ---- Tooling specifications ---- #
+[tool.usort]
+first_party_detection = false
+
+[tool.black]
+line-length = 120
+target-version = ["py310"]
+
+[tool.pydoclint]
+style = 'google'
+check-return-types = 'False'
+exclude = 'tests/rebots/models/(\w+)/scripts/|recipes/|rebots/modules/_export'
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["UP006"]
+
+[tool.pytest.ini_options]
+addopts = ["-q"]
+testpaths = ["tests"]
